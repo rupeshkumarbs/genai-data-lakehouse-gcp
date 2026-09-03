@@ -1,0 +1,57 @@
+# Dataplex Data Quality scan configuration for silver_customer.customer_events
+#
+# This runs as a scheduled Dataplex Data Quality task, complementing
+# (not duplicating) the finer-grained business-rule checks in
+# data_quality/quality_checks.py. Dataplex scans give platform-wide
+# visibility (dashboarded across every table in the lake) while the
+# Python checks give pipeline-blocking enforcement at the exact point
+# bad data would otherwise flow into Gold.
+
+name: silver-customer-events-quality-scan
+type: DATA_QUALITY
+data:
+  resource: "//bigquery.googleapis.com/projects/${project_id}/datasets/silver_customer/tables/customer_events"
+
+execution_spec:
+  trigger:
+    schedule:
+      cron: "0 4 * * *"  # runs after the batch DAG's bronze_to_silver step completes
+
+data_quality_spec:
+  rules:
+    - column: event_id
+      dimension: COMPLETENESS
+      non_null_expectation: {}
+      threshold: 1.0  # 100% of rows must have a non-null event_id
+
+    - column: customer_id
+      dimension: COMPLETENESS
+      non_null_expectation: {}
+      threshold: 1.0
+
+    - column: event_ts
+      dimension: VALIDITY
+      range_expectation:
+        min_value: "2020-01-01T00:00:00Z"
+        max_value: "CURRENT_TIMESTAMP"
+      threshold: 0.99  # allow small tolerance for clock skew edge cases
+
+    - column: event_type
+      dimension: VALIDITY
+      set_expectation:
+        values: ["purchase", "view", "click", "signup", "churn"]
+      threshold: 0.98  # flag if >2% of rows have an unrecognized event_type
+
+    - dimension: UNIQUENESS
+      column: event_id
+      uniqueness_expectation: {}
+      threshold: 1.0  # post-merge, event_id must be unique
+
+  post_scan_actions:
+    bigquery_export:
+      results_table: "${project_id}.governance.data_quality_scan_results"
+    notification_report:
+      recipients:
+        - "data-platform-alerts@example.com"
+      score_threshold_trigger:
+        score_threshold: 0.95  # alert if overall quality score drops below 95%
